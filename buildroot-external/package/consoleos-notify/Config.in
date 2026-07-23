@@ -1,0 +1,4 @@
+config BR2_PACKAGE_CONSOLEOS_NOTIFY
+	bool "consoleos-notify"
+	help
+	  Bus de notifications système de ConsoleOS.
