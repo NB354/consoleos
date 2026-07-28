@@ -28,7 +28,7 @@
 #include <sys/stat.h>
 #include <libevdev-1.0/libevdev/libevdev.h>
 
-#include "../common/ipc.h"
+#include "ipc.h"
 
 #define MAX_PADS 8
 

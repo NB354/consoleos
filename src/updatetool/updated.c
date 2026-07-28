@@ -34,7 +34,7 @@
 #include <sys/reboot.h>
 #include <linux/reboot.h>
 
-#include "../common/ipc.h"
+#include "ipc.h"
 
 #define MAGIC "CUPD"
 #define SIG_LEN crypto_sign_BYTES /* 64 octets ed25519 */

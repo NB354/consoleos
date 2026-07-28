@@ -5,7 +5,7 @@ LDLIBS ?= $(shell pkg-config --libs libevdev 2>/dev/null || echo -levdev)
 .PHONY: all clean
 all: consoleos-padd
 
-consoleos-padd: padd.c ../common/ipc.h
+consoleos-padd: padd.c ipc.h
 	$(CC) $(CFLAGS) -o consoleos-padd padd.c $(LDLIBS)
 
 clean:

@@ -33,8 +33,8 @@
 #include <openssl/sha.h>
 #include <sqlite3.h>
 
-#include "../common/ipc.h"
-#include "../common/zpk_format.h"
+#include "ipc.h"
+#include "zpk_format.h"
 
 #define EVENT_SIZE (sizeof(struct inotify_event))
 #define EVENT_BUF_LEN (1024 * (EVENT_SIZE + 16))

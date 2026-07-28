@@ -33,7 +33,7 @@
 #include <sqlite3.h>
 
 #include "theme.h"
-#include "../common/ipc.h"
+#include "ipc.h"
 
 #define WINDOW_W 1280
 #define WINDOW_H 720
