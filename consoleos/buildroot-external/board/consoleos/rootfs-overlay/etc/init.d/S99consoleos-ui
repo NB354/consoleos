@@ -1,0 +1,18 @@
+#!/bin/sh
+# Interface graphique : dernier maillon de la chaîne de démarrage.
+# Relancée automatiquement si elle plante (respawn simple).
+case "$1" in
+  start)
+    echo "[ConsoleOS] Démarrage de l'interface..."
+    (
+      while true; do
+        /usr/bin/consoleos-ui --theme /usr/share/consoleos/themes/default
+        sleep 1
+      done
+    ) &
+    ;;
+  stop)
+    killall consoleos-ui 2>/dev/null
+    ;;
+  *) echo "usage: $0 {start|stop}" ;;
+esac

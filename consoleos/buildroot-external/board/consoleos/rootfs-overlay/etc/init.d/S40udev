@@ -1,0 +1,14 @@
+#!/bin/sh
+# Pilotes matériels : démarre udev pour la détection à chaud (USB, manettes...)
+case "$1" in
+  start)
+    echo "[ConsoleOS] Initialisation des pilotes matériels..."
+    /sbin/udevd --daemon
+    udevadm trigger --action=add
+    udevadm settle
+    ;;
+  stop)
+    killall udevd 2>/dev/null
+    ;;
+  *) echo "usage: $0 {start|stop}" ;;
+esac

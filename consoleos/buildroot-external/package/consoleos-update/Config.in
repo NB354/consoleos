@@ -1,0 +1,5 @@
+config BR2_PACKAGE_CONSOLEOS_UPDATE
+	bool "consoleos-update"
+	select BR2_PACKAGE_LIBSODIUM
+	help
+	  Démon de mise à jour hors-ligne signée de ConsoleOS.
