@@ -1,4 +1,0 @@
-config BR2_PACKAGE_CONSOLEOS_SANDBOX
-	bool "consoleos-sandbox"
-	help
-	  Lanceur bac à sable (namespaces Linux + cgroups v2) pour ConsoleOS.

@@ -1,5 +1,0 @@
-config BR2_PACKAGE_CONSOLEOS_PAD
-	bool "consoleos-pad"
-	select BR2_PACKAGE_LIBEVDEV
-	help
-	  Démon de gestion des manettes de ConsoleOS.

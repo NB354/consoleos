@@ -1,8 +1,0 @@
-config BR2_PACKAGE_CONSOLEOS_UI
-	bool "consoleos-ui"
-	select BR2_PACKAGE_SDL2
-	select BR2_PACKAGE_SDL2_IMAGE
-	select BR2_PACKAGE_SDL2_TTF
-	select BR2_PACKAGE_SQLITE
-	help
-	  Compositeur et interface graphique de ConsoleOS.

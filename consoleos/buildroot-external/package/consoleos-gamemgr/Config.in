@@ -1,7 +1,0 @@
-config BR2_PACKAGE_CONSOLEOS_GAMEMGR
-	bool "consoleos-gamemgr"
-	select BR2_PACKAGE_SQLITE
-	select BR2_PACKAGE_LIBARCHIVE
-	select BR2_PACKAGE_OPENSSL
-	help
-	  Démon gestionnaire de jeux (paquets .zpk) de ConsoleOS.

@@ -8,6 +8,7 @@ TARGET_DIR="$1"
 
 # Copie config.txt / cmdline.txt à la racine du rootfs pour que
 # post-image.sh puisse les inclure dans la partition boot.vfat
+mkdir -p "${TARGET_DIR}/boot"
 cp "${BOARD_DIR}/config.txt"   "${TARGET_DIR}/boot/config.txt"
 cp "${BOARD_DIR}/cmdline.txt"  "${TARGET_DIR}/boot/cmdline.txt"
 

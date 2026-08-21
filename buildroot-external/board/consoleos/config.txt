@@ -1,6 +1,9 @@
 # ConsoleOS - config.txt Raspberry Pi 4
-arm_64bit=1
-kernel=Image
+# Noyau 32 bits (armhf) : empreinte mémoire réduite par rapport à un noyau
+# 64 bits, ce qui compte sur une machine à 1 Go de RAM où chaque Mo doit
+# revenir au jeu plutôt qu'au système.
+arm_64bit=0
+kernel=zImage
 device_tree=bcm2711-rpi-4-b.dtb
 
 # Boot rapide : pas d'écran de warning, pas de délai

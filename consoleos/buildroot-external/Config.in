@@ -1,6 +1,0 @@
-source "$BR2_EXTERNAL_CONSOLEOS_PATH/package/consoleos-ui/Config.in"
-source "$BR2_EXTERNAL_CONSOLEOS_PATH/package/consoleos-gamemgr/Config.in"
-source "$BR2_EXTERNAL_CONSOLEOS_PATH/package/consoleos-sandbox/Config.in"
-source "$BR2_EXTERNAL_CONSOLEOS_PATH/package/consoleos-pad/Config.in"
-source "$BR2_EXTERNAL_CONSOLEOS_PATH/package/consoleos-update/Config.in"
-source "$BR2_EXTERNAL_CONSOLEOS_PATH/package/consoleos-notify/Config.in"
