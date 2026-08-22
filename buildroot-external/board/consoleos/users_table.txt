@@ -1,0 +1,8 @@
+# ConsoleOS - table des utilisateurs système (syntaxe "mkusers" de Buildroot)
+# Format : username uid group gid password home shell groups comment
+#
+# Utilisateur non privilégié utilisé par consoleos-sandbox pour abandonner
+# les privilèges root avant d'exécuter un jeu (voir src/sandbox/sandbox.c,
+# fonction drop_privileges). Sans cette entrée, getpwnam("games") échoue
+# et AUCUN jeu ne peut être lancé.
+games -1 games -1 ! - /bin/false audio,video,input Utilisateur ConsoleOS pour l'exécution des jeux en bac à sable
