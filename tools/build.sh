@@ -48,6 +48,9 @@ cd "${BUILDROOT_DIR}"
 echo "--- Application de la configuration ConsoleOS ---"
 make BR2_EXTERNAL="${PROJECT_ROOT}/buildroot-external" consoleos_rpi4_defconfig
 
+chmod +x "${PROJECT_ROOT}/buildroot-external/board/consoleos/post-build.sh"
+chmod +x "${PROJECT_ROOT}/buildroot-external/board/consoleos/post-image.sh"
+
 # Limite le nombre de compilations parallèles en fonction de la RAM disponible
 # (environ 1 job par 2 Go de RAM totale). Sur une machine à faible RAM, compiler
 # glibc/GCC avec `make -j$(nproc)` peut lancer plusieurs cc1/cc1plus gourmands

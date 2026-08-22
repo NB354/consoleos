@@ -32,8 +32,10 @@ jobs:
 
       - name: Compiler ConsoleOS
         run: |
+          chmod +x tools/build.sh tools/flash.sh
+          chmod +x buildroot-external/board/consoleos/post-build.sh
+          chmod +x buildroot-external/board/consoleos/post-image.sh
           cd tools
-          chmod +x build.sh flash.sh 2>/dev/null || true
           bash build.sh
 
       - name: Publier l'image générée
