@@ -25,6 +25,7 @@
 #include <dirent.h>
 #include <poll.h>
 #include <time.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <libevdev-1.0/libevdev/libevdev.h>
 
@@ -108,6 +109,7 @@ static const char *normalize_button(int code) {
 }
 
 static int notify_fd = -1;
+static time_t last_notify_attempt = 0;
 
 static void broadcast_event(int slot, pad_type_t type, const char *evtype, const char *name, int value) {
     if (notify_fd < 0) return;
@@ -115,7 +117,14 @@ static void broadcast_event(int slot, pad_type_t type, const char *evtype, const
     snprintf(line, sizeof(line),
         "{\"pad\":%d,\"driver\":\"%s\",\"type\":\"%s\",\"name\":\"%s\",\"value\":%d}",
         slot, pad_type_name(type), evtype, name, value);
-    ipc_send_line(notify_fd, line);
+    if (ipc_send_line(notify_fd, line) != 0) {
+        /* Connexion perdue (notifyd redémarré, socket fermée...) : on
+         * referme et on laissera la boucle principale retenter une
+         * reconnexion automatique, plutôt que de rester bloqué en
+         * silence jusqu'au prochain redémarrage du système. */
+        close(notify_fd);
+        notify_fd = -1;
+    }
 }
 
 /* Scanne /dev/input pour de nouveaux périphériques manette et les ouvre. */
@@ -164,8 +173,24 @@ static void scan_new_pads(void) {
     closedir(d);
 }
 
+/* Tente une connexion à consoleos-notifyd si elle n'est pas déjà établie,
+ * au maximum une fois toutes les 2 secondes (évite de saturer le système
+ * de tentatives si notifyd met du temps à démarrer ou reste indisponible). */
+static void ensure_notify_connected(void) {
+    if (notify_fd >= 0) return;
+    time_t now = time(NULL);
+    if (now - last_notify_attempt < 2) return;
+    last_notify_attempt = now;
+
+    notify_fd = ipc_client_connect(CONSOLEOS_NOTIFY_SOCK);
+    if (notify_fd >= 0) {
+        fprintf(stderr, "consoleos-padd: connecté à consoleos-notifyd\n");
+    }
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+    signal(SIGPIPE, SIG_IGN);
 
     notify_fd = ipc_client_connect(CONSOLEOS_NOTIFY_SOCK);
 
@@ -184,7 +209,7 @@ int main(int argc, char **argv) {
             scan_new_pads();
             last_scan = now;
         }
-
+        ensure_notify_connected();
         struct pollfd fds[MAX_PADS + 1];
         int nfds = 0;
         for (int i = 0; i < n_pads; i++) {

@@ -79,6 +79,14 @@ typedef struct {
     int gamemgr_fd;
     int notify_fd;
     int pad_fd;
+    int pad_lb_held;
+    int pad_rb_held;
+    int pad_start_held;
+    int pad_devmode_combo_fired;
+    int pad_dpad_x_prev;
+    int pad_dpad_y_prev;
+    int pad_lstick_x_prev;
+    int pad_lstick_y_prev;
 } app_t;
 
 /* ---------------------------------------------------------------------- */
@@ -102,6 +110,9 @@ static void fill_rounded_rect(SDL_Renderer *r, SDL_Rect rect, SDL_Color c) {
     SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
     SDL_RenderFillRect(r, &rect);
 }
+
+static void toggle_devmode(app_t *app);
+static void launch_selected_game(app_t *app);
 
 /* ---------------------------------------------------------------------- */
 /* IPC : bibliothèque de jeux                                              */
@@ -195,10 +206,14 @@ static void poll_notifications(app_t *app) {
     ssize_t n = recv(app->notify_fd, buf, sizeof(buf) - 1, MSG_DONTWAIT);
     if (n > 0) {
         buf[n] = 0;
-        char text[256] = {0};
-        char *p = strstr(buf, "\"text\":\"");
-        if (p) sscanf(p, "\"text\":\"%255[^\"]", text);
-        if (text[0]) push_notification(app, text);
+        if (strstr(buf, "\"name\":\"")) {
+            handle_pad_message(app, buf);
+        } else {
+            char text[256] = {0};
+            char *p = strstr(buf, "\"text\":\"");
+            if (p) sscanf(p, "\"text\":\"%255[^\"]", text);
+            if (text[0]) push_notification(app, text);
+        }
     }
 }
 
@@ -300,24 +315,100 @@ static void render_settings(app_t *app) {
 /* Boucle principale                                                       */
 /* ---------------------------------------------------------------------- */
 
+static void nav_move(app_t *app, int dx, int dy) {
+    if (app->view != VIEW_HOME || app->n_games <= 0) return;
+    int n = app->n_games;
+    if (dx > 0) app->selected = (app->selected + 1) % n;
+    else if (dx < 0) app->selected = (app->selected - 1 + n) % n;
+    else if (dy > 0) app->selected = (app->selected + 5) % n;
+    else if (dy < 0) app->selected = (app->selected - 5 + n) % n;
+}
+
+static void nav_select(app_t *app) {
+    if (app->view == VIEW_HOME) launch_selected_game(app);
+}
+
+static void nav_back(app_t *app) {
+    if (app->view == VIEW_SETTINGS || app->view == VIEW_DEVMODE) app->view = VIEW_HOME;
+}
+
+static void nav_open_settings(app_t *app) {
+    if (app->view == VIEW_HOME) app->view = VIEW_SETTINGS;
+}
+
 static void handle_keydown(app_t *app, SDL_Keycode key) {
-    switch (app->view) {
-        case VIEW_HOME:
-            if (key == SDLK_RIGHT) app->selected = (app->selected + 1) % (app->n_games ? app->n_games : 1);
-            else if (key == SDLK_LEFT) app->selected = (app->selected - 1 + app->n_games) % (app->n_games ? app->n_games : 1);
-            else if (key == SDLK_DOWN) app->selected = (app->selected + 5) % (app->n_games ? app->n_games : 1);
-            else if (key == SDLK_UP) app->selected = (app->selected - 5 + app->n_games) % (app->n_games ? app->n_games : 1);
-            else if (key == SDLK_RETURN) launch_selected_game(app);
-            else if (key == SDLK_F1) app->view = VIEW_SETTINGS;
-            else if (key == SDLK_F12) toggle_devmode(app);
-            break;
-        case VIEW_SETTINGS:
-        case VIEW_DEVMODE:
-            if (key == SDLK_ESCAPE) app->view = VIEW_HOME;
+    switch (key) {
+        case SDLK_RIGHT:  nav_move(app, 1, 0); break;
+        case SDLK_LEFT:   nav_move(app, -1, 0); break;
+        case SDLK_DOWN:   nav_move(app, 0, 1); break;
+        case SDLK_UP:     nav_move(app, 0, -1); break;
+        case SDLK_RETURN: nav_select(app); break;
+        case SDLK_ESCAPE: nav_back(app); break;
+        case SDLK_F1:     nav_open_settings(app); break;
+        case SDLK_F12:
+            toggle_devmode(app);
+            if (app->devmode_enabled) app->view = VIEW_DEVMODE;
             break;
         default: break;
     }
-    if (app->devmode_enabled && key == SDLK_F12) app->view = VIEW_DEVMODE;
+}
+
+/* Traduit un événement manette normalisé (relayé par consoleos-padd via le
+ * bus de notifications) en action de navigation. Voir docs/ipc-protocol.md
+ * pour le format JSON des événements manette. */
+static void handle_pad_message(app_t *app, const char *buf) {
+    char type[16] = {0};
+    char name[32] = {0};
+    int value = 0;
+    char *p;
+
+    if ((p = strstr(buf, "\"type\":\""))) sscanf(p, "\"type\":\"%15[^\"]", type);
+    if ((p = strstr(buf, "\"name\":\""))) sscanf(p, "\"name\":\"%31[^\"]", name);
+    if ((p = strstr(buf, "\"value\":"))) sscanf(p, "\"value\":%d", &value);
+
+    if (strcmp(type, "button") == 0) {
+        int pressed = (value != 0);
+
+        if (strcmp(name, "A") == 0 && pressed) nav_select(app);
+        else if (strcmp(name, "B") == 0 && pressed) nav_back(app);
+        else if (strcmp(name, "START") == 0 && pressed) nav_open_settings(app);
+
+        if (strcmp(name, "LB") == 0) app->pad_lb_held = pressed;
+        else if (strcmp(name, "RB") == 0) app->pad_rb_held = pressed;
+        else if (strcmp(name, "START") == 0) app->pad_start_held = pressed;
+
+        /* Combinaison secrète LB+RB+START maintenus -> mode développeur
+         * (cahier des charges : jamais visible en usage normal). */
+        if (app->pad_lb_held && app->pad_rb_held && app->pad_start_held) {
+            if (!app->pad_devmode_combo_fired) {
+                toggle_devmode(app);
+                if (app->devmode_enabled) app->view = VIEW_DEVMODE;
+                app->pad_devmode_combo_fired = 1;
+            }
+        } else {
+            app->pad_devmode_combo_fired = 0;
+        }
+    } else if (strcmp(type, "axis") == 0) {
+        const int THRESHOLD = 20000; /* marge pour ignorer le bruit du stick au repos */
+
+        if (strcmp(name, "DPAD_X") == 0) {
+            if (value < 0 && app->pad_dpad_x_prev >= 0) nav_move(app, -1, 0);
+            else if (value > 0 && app->pad_dpad_x_prev <= 0) nav_move(app, 1, 0);
+            app->pad_dpad_x_prev = value;
+        } else if (strcmp(name, "DPAD_Y") == 0) {
+            if (value < 0 && app->pad_dpad_y_prev >= 0) nav_move(app, 0, -1);
+            else if (value > 0 && app->pad_dpad_y_prev <= 0) nav_move(app, 0, 1);
+            app->pad_dpad_y_prev = value;
+        } else if (strcmp(name, "LSTICK_X") == 0) {
+            if (value > THRESHOLD && app->pad_lstick_x_prev <= THRESHOLD) nav_move(app, 1, 0);
+            else if (value < -THRESHOLD && app->pad_lstick_x_prev >= -THRESHOLD) nav_move(app, -1, 0);
+            app->pad_lstick_x_prev = value;
+        } else if (strcmp(name, "LSTICK_Y") == 0) {
+            if (value > THRESHOLD && app->pad_lstick_y_prev <= THRESHOLD) nav_move(app, 0, 1);
+            else if (value < -THRESHOLD && app->pad_lstick_y_prev >= -THRESHOLD) nav_move(app, 0, -1);
+            app->pad_lstick_y_prev = value;
+        }
+    }
 }
 
 int main(int argc, char **argv) {
