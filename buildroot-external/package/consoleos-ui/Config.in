@@ -3,6 +3,7 @@ config BR2_PACKAGE_CONSOLEOS_UI
 	select BR2_PACKAGE_SDL2
 	select BR2_PACKAGE_SDL2_IMAGE
 	select BR2_PACKAGE_SDL2_TTF
+	select BR2_PACKAGE_SDL2_MIXER
 	select BR2_PACKAGE_SQLITE
 	help
 	  Compositeur et interface graphique de ConsoleOS.

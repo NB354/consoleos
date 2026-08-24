@@ -25,6 +25,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
+#include <SDL2/SDL_mixer.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +64,8 @@ typedef struct {
     TTF_Font *font_small;
     theme_t theme;
     SDL_Texture *wallpaper;
+    Mix_Chunk *sound_nav;
+    Mix_Chunk *sound_select;
 
     view_t view;
     game_entry_t games[MAX_GAMES];
@@ -316,6 +319,10 @@ static void render_settings(app_t *app) {
 /* Boucle principale                                                       */
 /* ---------------------------------------------------------------------- */
 
+static void play_sound(Mix_Chunk *chunk) {
+    if (chunk) Mix_PlayChannel(-1, chunk, 0);
+}
+
 static void nav_move(app_t *app, int dx, int dy) {
     if (app->view != VIEW_HOME || app->n_games <= 0) return;
     int n = app->n_games;
@@ -323,10 +330,14 @@ static void nav_move(app_t *app, int dx, int dy) {
     else if (dx < 0) app->selected = (app->selected - 1 + n) % n;
     else if (dy > 0) app->selected = (app->selected + 5) % n;
     else if (dy < 0) app->selected = (app->selected - 5 + n) % n;
+    play_sound(app->sound_nav);
 }
 
 static void nav_select(app_t *app) {
-    if (app->view == VIEW_HOME) launch_selected_game(app);
+    if (app->view == VIEW_HOME) {
+        play_sound(app->sound_select);
+        launch_selected_game(app);
+    }
 }
 
 static void nav_back(app_t *app) {
@@ -423,6 +434,9 @@ int main(int argc, char **argv) {
         return 1;
     }
     TTF_Init();
+    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 1024) != 0) {
+        fprintf(stderr, "ui: Mix_OpenAudio a échoué : %s (sons désactivés)\n", Mix_GetError());
+    }
     IMG_Init(IMG_INIT_PNG);
 
     app_t app;
@@ -448,6 +462,8 @@ int main(int argc, char **argv) {
         SDL_Surface *surf = IMG_Load(app.theme.wallpaper_path);
         if (surf) { app.wallpaper = SDL_CreateTextureFromSurface(app.renderer, surf); SDL_FreeSurface(surf); }
     }
+    if (app.theme.sound_nav[0]) app.sound_nav = Mix_LoadWAV(app.theme.sound_nav);
+    if (app.theme.sound_select[0]) app.sound_select = Mix_LoadWAV(app.theme.sound_select);
 
     app.gamemgr_fd = -1;
     app.notify_fd = ipc_client_connect(CONSOLEOS_NOTIFY_SOCK);
@@ -491,6 +507,9 @@ int main(int argc, char **argv) {
     if (app.font_small) TTF_CloseFont(app.font_small);
     SDL_DestroyRenderer(app.renderer);
     SDL_DestroyWindow(app.window);
+    if (app.sound_nav) Mix_FreeChunk(app.sound_nav);
+    if (app.sound_select) Mix_FreeChunk(app.sound_select);
+    Mix_CloseAudio();
     TTF_Quit();
     IMG_Quit();
     SDL_Quit();
