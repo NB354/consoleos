@@ -48,8 +48,20 @@ static const unsigned char CONSOLEOS_PUBKEY[crypto_sign_PUBLICKEYBYTES] = {
 static char g_watch_dir[512] = "/media";
 
 static void notify(const char *type, const char *text) {
-    int fd = ipc_client_connect(CONSOLEOS_NOTIFY_SOCK);
-    if (fd < 0) return;
+    int fd = -1;
+    for (int attempt = 0; attempt < 3 && fd < 0; attempt++) {
+        if (attempt > 0) {
+            /* 150 ms : laisse le temps à consoleos-notifyd de finir de
+             * démarrer s'il n'était pas encore prêt (course de démarrage
+             * entre services au boot), avant d'abandonner la notification. */
+            usleep(150000);
+        }
+        fd = ipc_client_connect(CONSOLEOS_NOTIFY_SOCK);
+    }
+    if (fd < 0) {
+        fprintf(stderr, "consoleos-updated: notification perdue (consoleos-notifyd injoignable) : %s\n", text);
+        return;
+    }
     char line[512];
     snprintf(line, sizeof(line),
              "{\"type\":\"%s\",\"text\":\"%s\",\"level\":\"info\"}", type, text);
