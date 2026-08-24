@@ -113,6 +113,7 @@ static void fill_rounded_rect(SDL_Renderer *r, SDL_Rect rect, SDL_Color c) {
 
 static void toggle_devmode(app_t *app);
 static void launch_selected_game(app_t *app);
+static void handle_pad_message(app_t *app, const char *buf);
 
 /* ---------------------------------------------------------------------- */
 /* IPC : bibliothèque de jeux                                              */
