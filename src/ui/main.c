@@ -36,12 +36,23 @@
 #include "theme.h"
 #include "ipc.h"
 
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <ifaddrs.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+
 #define WINDOW_W 1280
 #define WINDOW_H 720
 #define MAX_GAMES 256
 #define MAX_NOTIFICATIONS 5
 
-typedef enum { VIEW_HOME, VIEW_GAME_INFO, VIEW_SETTINGS, VIEW_DEVMODE } view_t;
+typedef enum {
+    VIEW_HOME, VIEW_GAME_INFO, VIEW_SETTINGS, VIEW_DEVMODE,
+    VIEW_DEV_FILES, VIEW_DEV_LOGS, VIEW_DEV_HWINFO,
+    VIEW_DEV_NETWORK, VIEW_DEV_BENCHMARK, VIEW_DEV_PADTEST
+} view_t;
 
 typedef struct {
     char id[128];
@@ -90,6 +101,38 @@ typedef struct {
     int pad_dpad_y_prev;
     int pad_lstick_x_prev;
     int pad_lstick_y_prev;
+
+    /* Gestionnaire de fichiers */
+    char fm_path[512];
+    char fm_entries[128][256];
+    int fm_n_entries;
+    int fm_selected;
+
+    /* Journaux système */
+    char log_lines[200][200];
+    int log_n_lines;
+    int log_scroll;
+
+    /* Réseau */
+    char net_lines[16][200];
+    int net_n_lines;
+
+    /* Benchmarks */
+    double bench_cpu_mops;
+    double bench_mem_mbps;
+    int bench_done;
+
+    /* Test manettes */
+    char pad_history[8][128];
+    int pad_history_count;
+
+    /* Paramètres */
+    char theme_names[16][64];
+    int n_themes;
+    int settings_selected;
+
+    /* Mode développeur : sélection dans le menu */
+    int dev_selected;
 } app_t;
 
 /* ---------------------------------------------------------------------- */
@@ -251,6 +294,349 @@ static void toggle_devmode(app_t *app) {
 /* Rendu des vues                                                          */
 /* ---------------------------------------------------------------------- */
 
+/* ==================== Informations système (utilitaires) ==================== */
+
+static void read_meminfo(long *total_kb, long *free_kb) {
+    *total_kb = 0; *free_kb = 0;
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "MemTotal: %ld kB", total_kb) == 1) continue;
+        sscanf(line, "MemAvailable: %ld kB", free_kb);
+    }
+    fclose(f);
+}
+
+static double read_loadavg(void) {
+    double load = 0.0;
+    FILE *f = fopen("/proc/loadavg", "r");
+    if (f) { fscanf(f, "%lf", &load); fclose(f); }
+    return load;
+}
+
+static int read_cpu_temp_millic(void) {
+    int t = 0;
+    FILE *f = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
+    if (f) { fscanf(f, "%d", &t); fclose(f); }
+    return t;
+}
+
+/* ==================== Paramètres : gestion des thèmes ==================== */
+
+static void scan_themes(app_t *app) {
+    app->n_themes = 0;
+    DIR *d = opendir("/usr/share/consoleos/themes");
+    if (!d) return;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL && app->n_themes < 16) {
+        if (ent->d_name[0] == '.') continue;
+        char check[600];
+        snprintf(check, sizeof(check), "/usr/share/consoleos/themes/%s/theme.json", ent->d_name);
+        FILE *f = fopen(check, "r");
+        if (!f) continue;
+        fclose(f);
+        strncpy(app->theme_names[app->n_themes], ent->d_name, 63);
+        app->n_themes++;
+    }
+    closedir(d);
+}
+
+/* Recharge un thème en direct : couleurs, police, fond d'écran, sons. */
+static void apply_theme(app_t *app, const char *name) {
+    char dir[500];
+    snprintf(dir, sizeof(dir), "/usr/share/consoleos/themes/%s", name);
+    theme_load(dir, &app->theme);
+
+    if (app->font_large) TTF_CloseFont(app->font_large);
+    if (app->font_medium) TTF_CloseFont(app->font_medium);
+    if (app->font_small) TTF_CloseFont(app->font_small);
+    app->font_large = app->font_medium = app->font_small = NULL;
+    if (app->theme.font_path[0]) {
+        app->font_large  = TTF_OpenFont(app->theme.font_path, 42);
+        app->font_medium = TTF_OpenFont(app->theme.font_path, 24);
+        app->font_small  = TTF_OpenFont(app->theme.font_path, 16);
+    }
+
+    if (app->wallpaper) { SDL_DestroyTexture(app->wallpaper); app->wallpaper = NULL; }
+    if (app->theme.wallpaper_path[0]) {
+        SDL_Surface *surf = IMG_Load(app->theme.wallpaper_path);
+        if (surf) { app->wallpaper = SDL_CreateTextureFromSurface(app->renderer, surf); SDL_FreeSurface(surf); }
+    }
+
+    if (app->sound_nav) { Mix_FreeChunk(app->sound_nav); app->sound_nav = NULL; }
+    if (app->sound_select) { Mix_FreeChunk(app->sound_select); app->sound_select = NULL; }
+    if (app->theme.sound_nav[0]) app->sound_nav = Mix_LoadWAV(app->theme.sound_nav);
+    if (app->theme.sound_select[0]) app->sound_select = Mix_LoadWAV(app->theme.sound_select);
+
+    /* Retient le choix pour le prochain démarrage */
+    FILE *f = fopen("/etc/consoleos/theme.conf", "w");
+    if (f) { fprintf(f, "%s\n", name); fclose(f); }
+}
+
+/* ==================== Gestionnaire de fichiers ==================== */
+/* Lecture seule, en dehors de tout bac à sable : outil de diagnostic
+ * réservé au mode développeur, jamais accessible en usage normal. */
+
+static void fm_load_dir(app_t *app, const char *path) {
+    strncpy(app->fm_path, path, sizeof(app->fm_path) - 1);
+    app->fm_n_entries = 0;
+    app->fm_selected = 0;
+    if (strcmp(path, "/") != 0) {
+        strncpy(app->fm_entries[app->fm_n_entries++], "..", sizeof(app->fm_entries[0]));
+    }
+    DIR *d = opendir(path);
+    if (!d) return;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL && app->fm_n_entries < 128) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char full[600];
+        snprintf(full, sizeof(full), "%s/%s", path, ent->d_name);
+        struct stat st;
+        int is_dir = (stat(full, &st) == 0 && S_ISDIR(st.st_mode));
+        snprintf(app->fm_entries[app->fm_n_entries], sizeof(app->fm_entries[0]),
+                 "%s%s", ent->d_name, is_dir ? "/" : "");
+        app->fm_n_entries++;
+    }
+    closedir(d);
+}
+
+static void fm_enter_selected(app_t *app) {
+    if (app->fm_selected < 0 || app->fm_selected >= app->fm_n_entries) return;
+    char *name = app->fm_entries[app->fm_selected];
+
+    if (strcmp(name, "..") == 0) {
+        char *last_slash = strrchr(app->fm_path, '/');
+        if (last_slash && last_slash != app->fm_path) *last_slash = 0;
+        else strcpy(app->fm_path, "/");
+        fm_load_dir(app, app->fm_path);
+        return;
+    }
+    size_t len = strlen(name);
+    if (len > 0 && name[len - 1] == '/') {
+        char clean[256], newpath[600];
+        strncpy(clean, name, sizeof(clean) - 1);
+        clean[len - 1] = 0;
+        if (strcmp(app->fm_path, "/") == 0) snprintf(newpath, sizeof(newpath), "/%s", clean);
+        else snprintf(newpath, sizeof(newpath), "%s/%s", app->fm_path, clean);
+        fm_load_dir(app, newpath);
+    }
+}
+
+static void render_dev_files(app_t *app) {
+    SDL_SetRenderDrawColor(app->renderer, 10, 10, 12, 255);
+    SDL_RenderClear(app->renderer);
+    draw_text(app, app->font_large, "Gestionnaire de fichiers", 40, 20, app->theme.accent);
+    draw_text(app, app->font_small, app->fm_path, 40, 65, app->theme.text_dim);
+
+    int y = 100, visible = 18;
+    int start = (app->fm_selected / visible) * visible;
+    for (int i = start; i < app->fm_n_entries && i < start + visible; i++) {
+        SDL_Color c = (i == app->fm_selected) ? app->theme.highlight : app->theme.text;
+        char line[300];
+        snprintf(line, sizeof(line), "%s %s", (i == app->fm_selected) ? ">" : " ", app->fm_entries[i]);
+        draw_text(app, app->font_small, line, 60, y, c);
+        y += 24;
+    }
+    if (app->fm_n_entries == 0) draw_text(app, app->font_small, "(dossier vide ou illisible)", 60, y, app->theme.text_dim);
+    draw_text(app, app->font_small, "Entrée : ouvrir | Échap : dossier parent",
+               40, WINDOW_H - 30, app->theme.text_dim);
+}
+
+/* ==================== Journaux système ==================== */
+
+static void load_system_logs(app_t *app) {
+    app->log_n_lines = 0;
+    FILE *f = popen("dmesg | tail -n 200", "r");
+    if (!f) return;
+    char line[200];
+    while (fgets(line, sizeof(line), f) && app->log_n_lines < 200) {
+        size_t l = strlen(line);
+        if (l > 0 && line[l - 1] == '\n') line[l - 1] = 0;
+        strncpy(app->log_lines[app->log_n_lines], line, sizeof(app->log_lines[0]) - 1);
+        app->log_n_lines++;
+    }
+    pclose(f);
+    app->log_scroll = app->log_n_lines > 20 ? app->log_n_lines - 20 : 0;
+}
+
+static void render_dev_logs(app_t *app) {
+    SDL_SetRenderDrawColor(app->renderer, 10, 10, 12, 255);
+    SDL_RenderClear(app->renderer);
+    draw_text(app, app->font_large, "Journaux système (dmesg)", 40, 20, app->theme.accent);
+    draw_text(app, app->font_small, "Haut/Bas : défiler | Échap : retour", 40, 65, app->theme.text_dim);
+    int y = 100;
+    for (int i = app->log_scroll; i < app->log_n_lines && y < WINDOW_H - 20; i++) {
+        draw_text(app, app->font_small, app->log_lines[i], 40, y, app->theme.text);
+        y += 20;
+    }
+}
+
+/* ==================== Informations matérielles ==================== */
+
+static void render_dev_hwinfo(app_t *app) {
+    SDL_SetRenderDrawColor(app->renderer, 10, 10, 12, 255);
+    SDL_RenderClear(app->renderer);
+    draw_text(app, app->font_large, "Informations matérielles", 40, 20, app->theme.accent);
+
+    char cpu_model[128] = "inconnu";
+    int n_cores = 0;
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "model name", 10) == 0 || strncmp(line, "Model", 5) == 0) {
+                char *colon = strchr(line, ':');
+                if (colon) {
+                    strncpy(cpu_model, colon + 2, sizeof(cpu_model) - 1);
+                    size_t l = strlen(cpu_model);
+                    if (l && cpu_model[l - 1] == '\n') cpu_model[l - 1] = 0;
+                }
+            }
+            if (strncmp(line, "processor", 9) == 0) n_cores++;
+        }
+        fclose(f);
+    }
+
+    long total_kb, free_kb;
+    read_meminfo(&total_kb, &free_kb);
+    int temp_c = read_cpu_temp_millic() / 1000;
+
+    struct statvfs vfs;
+    long storage_free_mb = 0, storage_total_mb = 0;
+    if (statvfs("/", &vfs) == 0) {
+        storage_total_mb = (long)((double)vfs.f_blocks * vfs.f_frsize / (1024 * 1024));
+        storage_free_mb  = (long)((double)vfs.f_bavail * vfs.f_frsize / (1024 * 1024));
+    }
+
+    int y = 80;
+    char line[256];
+    snprintf(line, sizeof(line), "CPU : %s", cpu_model);
+    draw_text(app, app->font_medium, line, 40, y, app->theme.text); y += 34;
+    snprintf(line, sizeof(line), "Cœurs : %d", n_cores);
+    draw_text(app, app->font_medium, line, 40, y, app->theme.text); y += 34;
+    snprintf(line, sizeof(line), "Température CPU : %d°C", temp_c);
+    draw_text(app, app->font_medium, line, 40, y, app->theme.text); y += 34;
+    snprintf(line, sizeof(line), "RAM : %ld / %ld Mo libres", free_kb / 1024, total_kb / 1024);
+    draw_text(app, app->font_medium, line, 40, y, app->theme.text); y += 34;
+    snprintf(line, sizeof(line), "Stockage : %ld / %ld Mo libres", storage_free_mb, storage_total_mb);
+    draw_text(app, app->font_medium, line, 40, y, app->theme.text);
+}
+
+/* ==================== Outils réseau ==================== */
+
+static void load_network_info(app_t *app) {
+    app->net_n_lines = 0;
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) == 0) {
+        for (ifa = ifaddr; ifa != NULL && app->net_n_lines < 15; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+            char host[NI_MAXHOST];
+            getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, sizeof(host), NULL, 0, NI_NUMERICHOST);
+            snprintf(app->net_lines[app->net_n_lines], sizeof(app->net_lines[0]), "%s : %s", ifa->ifa_name, host);
+            app->net_n_lines++;
+        }
+        freeifaddrs(ifaddr);
+    }
+    if (app->net_n_lines == 0) {
+        strncpy(app->net_lines[0], "(aucune interface active)", sizeof(app->net_lines[0]) - 1);
+        app->net_n_lines = 1;
+    }
+}
+
+static void render_dev_network(app_t *app) {
+    SDL_SetRenderDrawColor(app->renderer, 10, 10, 12, 255);
+    SDL_RenderClear(app->renderer);
+    draw_text(app, app->font_large, "Outils réseau", 40, 20, app->theme.accent);
+    int y = 80;
+    draw_text(app, app->font_medium, "Interfaces :", 40, y, app->theme.text_dim); y += 32;
+    for (int i = 0; i < app->net_n_lines; i++) {
+        draw_text(app, app->font_small, app->net_lines[i], 60, y, app->theme.text);
+        y += 24;
+    }
+    draw_text(app, app->font_small, "Entrée : tester la connexion internet (ping)",
+               40, WINDOW_H - 30, app->theme.text_dim);
+}
+
+/* ==================== Benchmarks ==================== */
+
+static void run_benchmarks(app_t *app) {
+    struct timespec t0, t1;
+    volatile unsigned long acc = 0;
+    unsigned long iters = 0;
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    do {
+        for (int i = 0; i < 100000; i++) acc += (unsigned long)i * 2654435761u;
+        iters += 100000;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+    } while ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000 < 300);
+    double cpu_s = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    app->bench_cpu_mops = (iters / 1000000.0) / cpu_s;
+
+    size_t bufsize = 16 * 1024 * 1024;
+    void *src = malloc(bufsize), *dst = malloc(bufsize);
+    if (src && dst) {
+        memset(src, 0xAA, bufsize);
+        int copies = 0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        do {
+            memcpy(dst, src, bufsize);
+            copies++;
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+        } while ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000 < 300);
+        double mem_s = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        app->bench_mem_mbps = (copies * bufsize / (1024.0 * 1024.0)) / mem_s;
+    }
+    free(src); free(dst);
+    app->bench_done = 1;
+}
+
+static void render_dev_benchmark(app_t *app) {
+    SDL_SetRenderDrawColor(app->renderer, 10, 10, 12, 255);
+    SDL_RenderClear(app->renderer);
+    draw_text(app, app->font_large, "Benchmarks", 40, 20, app->theme.accent);
+    if (!app->bench_done) {
+        draw_text(app, app->font_medium, "Entrée : lancer le test (~1 seconde)", 40, 90, app->theme.text_dim);
+        return;
+    }
+    char line[128];
+    snprintf(line, sizeof(line), "CPU : %.1f millions d'opérations / seconde", app->bench_cpu_mops);
+    draw_text(app, app->font_medium, line, 40, 90, app->theme.text);
+    snprintf(line, sizeof(line), "Mémoire : %.0f Mo/s (memcpy)", app->bench_mem_mbps);
+    draw_text(app, app->font_medium, line, 40, 130, app->theme.text);
+    draw_text(app, app->font_small, "Entrée : relancer le test", 40, 180, app->theme.text_dim);
+}
+
+/* ==================== Test des manettes ==================== */
+
+static void render_dev_padtest(app_t *app) {
+    SDL_SetRenderDrawColor(app->renderer, 10, 10, 12, 255);
+    SDL_RenderClear(app->renderer);
+    draw_text(app, app->font_large, "Test des manettes", 40, 20, app->theme.accent);
+    draw_text(app, app->font_small, "Appuyez sur les boutons ou bougez les sticks",
+               40, 65, app->theme.text_dim);
+    int y = 110;
+    for (int i = 0; i < app->pad_history_count; i++) {
+        draw_text(app, app->font_small, app->pad_history[i], 60, y, app->theme.text);
+        y += 24;
+    }
+    if (app->pad_history_count == 0) draw_text(app, app->font_small, "(aucun événement reçu)", 60, y, app->theme.text_dim);
+}
+
+/* Lance un vrai shell sur la console texte, puis rend la main au compositeur. */
+static void open_dev_terminal(app_t *app) {
+    SDL_MinimizeWindow(app->window);
+    fprintf(stderr, "ui: terminal développeur ouvert (tapez 'exit' pour revenir)\n");
+    system("/bin/sh");
+    SDL_RestoreWindow(app->window);
+    SDL_RaiseWindow(app->window);
+}
+
+static int test_internet_connectivity(void) {
+    return system("ping -c 1 -W 1 8.8.8.8 > /dev/null 2>&1") == 0;
+}
+
 static void render_home(app_t *app) {
     SDL_SetRenderDrawColor(app->renderer, app->theme.bg.r, app->theme.bg.g, app->theme.bg.b, 255);
     SDL_RenderClear(app->renderer);
@@ -298,21 +684,65 @@ static void render_home(app_t *app) {
     }
 }
 
+#define DEV_MENU_ITEMS 8
+static const char *dev_menu_labels[DEV_MENU_ITEMS] = {
+    "Ouvrir un terminal",
+    "Journaux système",
+    "Gestionnaire de fichiers",
+    "Informations matérielles",
+    "Outils réseau",
+    "Benchmarks",
+    "Test des manettes",
+    "Quitter le mode développeur",
+};
+
 static void render_devmode(app_t *app) {
     SDL_SetRenderDrawColor(app->renderer, 10, 10, 12, 255);
     SDL_RenderClear(app->renderer);
-    draw_text(app, app->font_large, "Mode développeur", 40, 30, app->theme.accent);
-    draw_text(app, app->font_medium, "Gestionnaire de fichiers | Terminal | Journaux | Réseau | Benchmarks | Test manettes",
-               40, 100, app->theme.text);
-    draw_text(app, app->font_small, "(Échap pour revenir à la bibliothèque)", 40, 140, app->theme.text_dim);
+    draw_text(app, app->font_large, "Mode développeur", 40, 20, app->theme.accent);
+
+    long total_kb, free_kb;
+    read_meminfo(&total_kb, &free_kb);
+    char info[200];
+    snprintf(info, sizeof(info), "RAM : %ld / %ld Mo libres | Charge : %.2f | CPU : %d°C",
+             free_kb / 1024, total_kb / 1024, read_loadavg(), read_cpu_temp_millic() / 1000);
+    draw_text(app, app->font_small, info, 40, 70, app->theme.text_dim);
+
+    int y = 120;
+    for (int i = 0; i < DEV_MENU_ITEMS; i++) {
+        SDL_Color c = (i == app->dev_selected) ? app->theme.highlight : app->theme.text;
+        char line[100];
+        snprintf(line, sizeof(line), "%s %s", (i == app->dev_selected) ? ">" : " ", dev_menu_labels[i]);
+        draw_text(app, app->font_medium, line, 40, y, c);
+        y += 36;
+    }
 }
 
 static void render_settings(app_t *app) {
     SDL_SetRenderDrawColor(app->renderer, app->theme.bg.r, app->theme.bg.g, app->theme.bg.b, 255);
     SDL_RenderClear(app->renderer);
     draw_text(app, app->font_large, "Paramètres", 40, 30, app->theme.text);
-    draw_text(app, app->font_medium, "Thème, couleurs, fond d'écran, sons, disposition",
-               40, 100, app->theme.text_dim);
+    draw_text(app, app->font_small, "Haut/Bas pour naviguer, Entrée pour appliquer, Échap pour revenir",
+               40, 90, app->theme.text_dim);
+
+    int y = 140;
+    draw_text(app, app->font_medium, "Thème :", 40, y, app->theme.text_dim);
+    y += 36;
+    for (int i = 0; i < app->n_themes; i++) {
+        SDL_Color c = (i == app->settings_selected) ? app->theme.highlight : app->theme.text;
+        char line[80];
+        snprintf(line, sizeof(line), "%s  %s", (i == app->settings_selected) ? ">" : " ", app->theme_names[i]);
+        draw_text(app, app->font_small, line, 60, y, c);
+        y += 28;
+    }
+
+    y += 20;
+    SDL_Color sysc = (app->settings_selected == app->n_themes) ? app->theme.highlight : app->theme.text;
+    char sysline[80];
+    snprintf(sysline, sizeof(sysline), "%s Affichage FPS/température : %s",
+             (app->settings_selected == app->n_themes) ? ">" : " ",
+             app->show_sysmonitor ? "activé" : "désactivé");
+    draw_text(app, app->font_small, sysline, 40, y, sysc);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -324,24 +754,81 @@ static void play_sound(Mix_Chunk *chunk) {
 }
 
 static void nav_move(app_t *app, int dx, int dy) {
-    if (app->view != VIEW_HOME || app->n_games <= 0) return;
-    int n = app->n_games;
-    if (dx > 0) app->selected = (app->selected + 1) % n;
-    else if (dx < 0) app->selected = (app->selected - 1 + n) % n;
-    else if (dy > 0) app->selected = (app->selected + 5) % n;
-    else if (dy < 0) app->selected = (app->selected - 5 + n) % n;
-    play_sound(app->sound_nav);
+    if (app->view == VIEW_HOME && app->n_games > 0) {
+        int n = app->n_games;
+        if (dx > 0) app->selected = (app->selected + 1) % n;
+        else if (dx < 0) app->selected = (app->selected - 1 + n) % n;
+        else if (dy > 0) app->selected = (app->selected + 5) % n;
+        else if (dy < 0) app->selected = (app->selected - 5 + n) % n;
+        play_sound(app->sound_nav);
+    } else if (app->view == VIEW_SETTINGS) {
+        int n = app->n_themes + 1;
+        if (dy > 0) app->settings_selected = (app->settings_selected + 1) % n;
+        else if (dy < 0) app->settings_selected = (app->settings_selected - 1 + n) % n;
+        play_sound(app->sound_nav);
+    } else if (app->view == VIEW_DEVMODE) {
+        if (dy > 0) app->dev_selected = (app->dev_selected + 1) % DEV_MENU_ITEMS;
+        else if (dy < 0) app->dev_selected = (app->dev_selected - 1 + DEV_MENU_ITEMS) % DEV_MENU_ITEMS;
+        play_sound(app->sound_nav);
+    } else if (app->view == VIEW_DEV_FILES) {
+        if (dy > 0 && app->fm_selected < app->fm_n_entries - 1) app->fm_selected++;
+        else if (dy < 0 && app->fm_selected > 0) app->fm_selected--;
+        play_sound(app->sound_nav);
+    } else if (app->view == VIEW_DEV_LOGS) {
+        if (dy > 0 && app->log_scroll < app->log_n_lines - 1) app->log_scroll++;
+        else if (dy < 0 && app->log_scroll > 0) app->log_scroll--;
+    }
 }
 
 static void nav_select(app_t *app) {
     if (app->view == VIEW_HOME) {
         play_sound(app->sound_select);
         launch_selected_game(app);
+    } else if (app->view == VIEW_SETTINGS) {
+        play_sound(app->sound_select);
+        if (app->settings_selected < app->n_themes) apply_theme(app, app->theme_names[app->settings_selected]);
+        else app->show_sysmonitor = !app->show_sysmonitor;
+    } else if (app->view == VIEW_DEVMODE) {
+        play_sound(app->sound_select);
+        switch (app->dev_selected) {
+            case 0: open_dev_terminal(app); break;
+            case 1: load_system_logs(app); app->view = VIEW_DEV_LOGS; break;
+            case 2: fm_load_dir(app, "/"); app->view = VIEW_DEV_FILES; break;
+            case 3: app->view = VIEW_DEV_HWINFO; break;
+            case 4: load_network_info(app); app->view = VIEW_DEV_NETWORK; break;
+            case 5: app->bench_done = 0; app->view = VIEW_DEV_BENCHMARK; break;
+            case 6: app->pad_history_count = 0; app->view = VIEW_DEV_PADTEST; break;
+            case 7: app->view = VIEW_HOME; break;
+        }
+    } else if (app->view == VIEW_DEV_FILES) {
+        fm_enter_selected(app);
+    } else if (app->view == VIEW_DEV_NETWORK) {
+        int ok = test_internet_connectivity();
+        int idx = app->net_n_lines < 15 ? app->net_n_lines : 15;
+        snprintf(app->net_lines[idx], sizeof(app->net_lines[0]), "Test internet : %s", ok ? "OK" : "échec");
+        if (app->net_n_lines < 16) app->net_n_lines++;
+    } else if (app->view == VIEW_DEV_BENCHMARK) {
+        run_benchmarks(app);
     }
 }
 
 static void nav_back(app_t *app) {
-    if (app->view == VIEW_SETTINGS || app->view == VIEW_DEVMODE) app->view = VIEW_HOME;
+    if (app->view == VIEW_SETTINGS || app->view == VIEW_DEVMODE) {
+        app->view = VIEW_HOME;
+    } else if (app->view == VIEW_DEV_FILES) {
+        if (strcmp(app->fm_path, "/") == 0) {
+            app->view = VIEW_DEVMODE;
+        } else {
+            char *last_slash = strrchr(app->fm_path, '/');
+            if (last_slash && last_slash != app->fm_path) *last_slash = 0;
+            else strcpy(app->fm_path, "/");
+            fm_load_dir(app, app->fm_path);
+        }
+    } else if (app->view == VIEW_DEV_LOGS || app->view == VIEW_DEV_HWINFO ||
+               app->view == VIEW_DEV_NETWORK || app->view == VIEW_DEV_BENCHMARK ||
+               app->view == VIEW_DEV_PADTEST) {
+        app->view = VIEW_DEVMODE;
+    }
 }
 
 static void nav_open_settings(app_t *app) {
@@ -377,6 +864,13 @@ static void handle_pad_message(app_t *app, const char *buf) {
     if ((p = strstr(buf, "\"type\":\""))) sscanf(p, "\"type\":\"%15[^\"]", type);
     if ((p = strstr(buf, "\"name\":\""))) sscanf(p, "\"name\":\"%31[^\"]", name);
     if ((p = strstr(buf, "\"value\":"))) sscanf(p, "\"value\":%d", &value);
+
+    if (app->pad_history_count >= 8) {
+        for (int i = 1; i < 8; i++) strncpy(app->pad_history[i - 1], app->pad_history[i], sizeof(app->pad_history[0]));
+        app->pad_history_count = 7;
+    }
+    snprintf(app->pad_history[app->pad_history_count], sizeof(app->pad_history[0]), "%s %s = %d", type, name, value);
+    app->pad_history_count++;
 
     if (strcmp(type, "button") == 0) {
         int pressed = (value != 0);
@@ -452,6 +946,7 @@ int main(int argc, char **argv) {
     app.renderer = SDL_CreateRenderer(app.window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
     theme_load(theme_dir, &app.theme);
+    scan_themes(&app);
 
     if (app.theme.font_path[0]) {
         app.font_large  = TTF_OpenFont(app.theme.font_path, 42);
@@ -491,6 +986,12 @@ int main(int argc, char **argv) {
             case VIEW_HOME: render_home(&app); break;
             case VIEW_SETTINGS: render_settings(&app); break;
             case VIEW_DEVMODE: render_devmode(&app); break;
+            case VIEW_DEV_FILES: render_dev_files(&app); break;
+            case VIEW_DEV_LOGS: render_dev_logs(&app); break;
+            case VIEW_DEV_HWINFO: render_dev_hwinfo(&app); break;
+            case VIEW_DEV_NETWORK: render_dev_network(&app); break;
+            case VIEW_DEV_BENCHMARK: render_dev_benchmark(&app); break;
+            case VIEW_DEV_PADTEST: render_dev_padtest(&app); break;
             default: render_home(&app); break;
         }
 
