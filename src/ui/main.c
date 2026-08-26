@@ -684,6 +684,48 @@ static void render_home(app_t *app) {
     }
 }
 
+static void render_game_info(app_t *app) {
+    SDL_SetRenderDrawColor(app->renderer, app->theme.bg.r, app->theme.bg.g, app->theme.bg.b, 255);
+    SDL_RenderClear(app->renderer);
+
+    if (app->selected < 0 || app->selected >= app->n_games) {
+        draw_text(app, app->font_medium, "Aucun jeu sélectionné", 40, 30, app->theme.text_dim);
+        return;
+    }
+    game_entry_t *g = &app->games[app->selected];
+
+    draw_text(app, app->font_large, g->name, 40, 30, app->theme.text);
+
+    char line[200];
+    int y = 100;
+
+    snprintf(line, sizeof(line), "Version : %s", g->version[0] ? g->version : "inconnue");
+    draw_text(app, app->font_medium, line, 40, y, app->theme.text); y += 40;
+
+    int hours = g->playtime / 3600;
+    int minutes = (g->playtime % 3600) / 60;
+    if (hours > 0) snprintf(line, sizeof(line), "Temps de jeu : %dh %02dmin", hours, minutes);
+    else snprintf(line, sizeof(line), "Temps de jeu : %d min", minutes);
+    draw_text(app, app->font_medium, line, 40, y, app->theme.text); y += 40;
+
+    if (g->last_played > 0) {
+        time_t t = (time_t)g->last_played;
+        struct tm *tm_info = localtime(&t);
+        char datebuf[64];
+        strftime(datebuf, sizeof(datebuf), "%d/%m/%Y à %H:%M", tm_info);
+        snprintf(line, sizeof(line), "Dernière utilisation : %s", datebuf);
+    } else {
+        snprintf(line, sizeof(line), "Dernière utilisation : jamais joué");
+    }
+    draw_text(app, app->font_medium, line, 40, y, app->theme.text); y += 40;
+
+    snprintf(line, sizeof(line), "Identifiant : %s", g->id);
+    draw_text(app, app->font_small, line, 40, y, app->theme.text_dim); y += 50;
+
+    draw_text(app, app->font_small, "Entrée : lancer le jeu | Échap : retour à la bibliothèque",
+               40, WINDOW_H - 40, app->theme.text_dim);
+}
+
 #define DEV_MENU_ITEMS 8
 static const char *dev_menu_labels[DEV_MENU_ITEMS] = {
     "Ouvrir un terminal",
@@ -781,7 +823,7 @@ static void nav_move(app_t *app, int dx, int dy) {
 }
 
 static void nav_select(app_t *app) {
-    if (app->view == VIEW_HOME) {
+    if (app->view == VIEW_HOME || app->view == VIEW_GAME_INFO) {
         play_sound(app->sound_select);
         launch_selected_game(app);
     } else if (app->view == VIEW_SETTINGS) {
@@ -813,7 +855,7 @@ static void nav_select(app_t *app) {
 }
 
 static void nav_back(app_t *app) {
-    if (app->view == VIEW_SETTINGS || app->view == VIEW_DEVMODE) {
+    if (app->view == VIEW_SETTINGS || app->view == VIEW_DEVMODE || app->view == VIEW_GAME_INFO) {
         app->view = VIEW_HOME;
     } else if (app->view == VIEW_DEV_FILES) {
         if (strcmp(app->fm_path, "/") == 0) {
@@ -835,6 +877,10 @@ static void nav_open_settings(app_t *app) {
     if (app->view == VIEW_HOME) app->view = VIEW_SETTINGS;
 }
 
+static void nav_open_game_info(app_t *app) {
+    if (app->view == VIEW_HOME && app->n_games > 0) app->view = VIEW_GAME_INFO;
+}
+
 static void handle_keydown(app_t *app, SDL_Keycode key) {
     switch (key) {
         case SDLK_RIGHT:  nav_move(app, 1, 0); break;
@@ -844,6 +890,7 @@ static void handle_keydown(app_t *app, SDL_Keycode key) {
         case SDLK_RETURN: nav_select(app); break;
         case SDLK_ESCAPE: nav_back(app); break;
         case SDLK_F1:     nav_open_settings(app); break;
+        case SDLK_F2:     nav_open_game_info(app); break;
         case SDLK_F12:
             toggle_devmode(app);
             if (app->devmode_enabled) app->view = VIEW_DEVMODE;
@@ -878,6 +925,7 @@ static void handle_pad_message(app_t *app, const char *buf) {
         if (strcmp(name, "A") == 0 && pressed) nav_select(app);
         else if (strcmp(name, "B") == 0 && pressed) nav_back(app);
         else if (strcmp(name, "START") == 0 && pressed) nav_open_settings(app);
+        else if (strcmp(name, "Y") == 0 && pressed) nav_open_game_info(app);
 
         if (strcmp(name, "LB") == 0) app->pad_lb_held = pressed;
         else if (strcmp(name, "RB") == 0) app->pad_rb_held = pressed;
@@ -984,6 +1032,7 @@ int main(int argc, char **argv) {
 
         switch (app.view) {
             case VIEW_HOME: render_home(&app); break;
+            case VIEW_GAME_INFO: render_game_info(&app); break;
             case VIEW_SETTINGS: render_settings(&app); break;
             case VIEW_DEVMODE: render_devmode(&app); break;
             case VIEW_DEV_FILES: render_dev_files(&app); break;
