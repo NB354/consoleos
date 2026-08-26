@@ -992,6 +992,16 @@ int main(int argc, char **argv) {
     app.window = SDL_CreateWindow("ConsoleOS", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                    WINDOW_W, WINDOW_H, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
     app.renderer = SDL_CreateRenderer(app.window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!app.renderer) {
+        fprintf(stderr, "ui: renderer accéléré indisponible (%s), bascule en rendu logiciel\n", SDL_GetError());
+        app.renderer = SDL_CreateRenderer(app.window, -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (!app.renderer) {
+        fprintf(stderr, "ui: impossible de créer un renderer, arrêt (%s)\n", SDL_GetError());
+        SDL_DestroyWindow(app.window);
+        SDL_Quit();
+        return 1;
+    }
 
     theme_load(theme_dir, &app.theme);
     scan_themes(&app);

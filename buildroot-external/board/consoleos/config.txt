@@ -22,5 +22,12 @@ hdmi_mode=16
 # USB / manettes
 dtoverlay=dwc2,dr_mode=host
 
+# Pilote graphique KMS/DRM (VideoCore VI) : indispensable pour toute sortie
+# HDMI réelle sur RPi4. Sans cet overlay, le firmware force bien la
+# détection HDMI (hdmi_force_hotplug ci-dessus) mais aucun pilote ne pilote
+# jamais l'affichage : l'écran s'allume, détecte un signal, mais reste noir.
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+
 # Bluetooth activé (manettes sans fil)
 dtparam=krnbt=on
