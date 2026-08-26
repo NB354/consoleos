@@ -4,6 +4,7 @@
 case "$1" in
   start)
     echo "[ConsoleOS] Démarrage de l'interface..."
+    export SDL_VIDEODRIVER=kmsdrm
     (
       while true; do
         /usr/bin/consoleos-ui --theme /usr/share/consoleos/themes/default
