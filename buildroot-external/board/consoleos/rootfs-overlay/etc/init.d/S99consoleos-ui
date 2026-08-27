@@ -3,6 +3,10 @@
 # Relancée automatiquement si elle plante (respawn simple).
 case "$1" in
   start)
+    if [ -f /etc/consoleos/ui_disabled ]; then
+      echo "[ConsoleOS] Interface désactivée (diagnostic) : /etc/consoleos/ui_disabled présent"
+      exit 0
+    fi
     echo "[ConsoleOS] Démarrage de l'interface..."
     export SDL_VIDEODRIVER=kmsdrm
     (

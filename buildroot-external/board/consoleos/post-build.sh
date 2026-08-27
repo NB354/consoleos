@@ -16,6 +16,11 @@ cp "${BOARD_DIR}/cmdline.txt"  "${TARGET_DIR}/boot/cmdline.txt"
 mkdir -p "${TARGET_DIR}/etc/consoleos"
 echo "devmode_enabled=0" > "${TARGET_DIR}/etc/consoleos/devmode.conf"
 
+# TEMPORAIRE - diagnostic kmsdrm : désactive le démarrage de l'UI pour
+# libérer l'écran et pouvoir se connecter en root sans interférence.
+# À SUPPRIMER une fois le problème kmsdrm résolu.
+touch "${TARGET_DIR}/etc/consoleos/ui_disabled"
+
 # Droits d'exécution sur les scripts d'init ConsoleOS
 chmod +x "${TARGET_DIR}/etc/init.d/"S* 2>/dev/null || true
 
