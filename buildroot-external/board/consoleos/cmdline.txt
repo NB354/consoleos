@@ -1,1 +1,1 @@
-console=tty1 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait vt.global_cursor_default=0 logo.nologo consoleblank=0
+console=tty1 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait quiet loglevel=0 vt.global_cursor_default=0 logo.nologo consoleblank=0
